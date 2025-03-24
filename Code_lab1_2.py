@@ -8,7 +8,7 @@ import psutil
 import matplotlib.pyplot as plt
 import copy
 from scipy.spatial import KDTree
-from scipy.spatial.distance import cdist
+from geopy.distance import geodesic
 
 # A. Identifying Location Anomalies
 def detect_location_anomalies(data):
@@ -164,18 +164,6 @@ def process_anomalies_parallel(detect_func, vessel_groups, n_rows):
 
     return anomalies, time.time() - start_time
 
-# Runs anomaly detection sequentially
-def process_anomalies_non_parallel(detect_func, vessel_groups):
-    start_time = time.time()
-    anomalies = [result for _, group in vessel_groups for result in detect_func(group)]
-    return anomalies, time.time() - start_time
-
-# Performance analysis
-def measure_performance(parallel_time, non_parallel_time):
-    speedup = non_parallel_time / parallel_time if parallel_time > 0 else 0
-    cpu_usage = psutil.cpu_percent(interval=1)
-    mem_usage = psutil.virtual_memory().percent
-    return speedup, cpu_usage, mem_usage
 
 if __name__ == '__main__':
     df_lazy = pl.scan_csv(
@@ -189,36 +177,20 @@ if __name__ == '__main__':
         .select(["MMSI", "Latitude", "Longitude", "SOG", "timestamp"])
     )
 
-    df_pandas = df.collect().head(500000)
+    df_pandas = df.collect().head(40000)
+
     vessel_groups = df_pandas.group_by('MMSI')
 
-    # Process all location anomalies
-    location_anomalies_parallel, parallel_A = process_anomalies_parallel(detect_location_anomalies, vessel_groups, n_rows = len(df_pandas))
-    location_anomalies_non_parallel, non_parallel_A = process_anomalies_non_parallel(detect_location_anomalies, vessel_groups)
+    # Process location anomalies
+    location_anomalies_parallel, parallel_A = process_anomalies_parallel(detect_location_anomalies, vessel_groups)
 
-    # Process all speed anomalies
-    speed_anomalies_parallel, parallel_B = process_anomalies_parallel(detect_speed_anomalies, vessel_groups, n_rows = len(df_pandas))
-    speed_anomalies_non_parallel, non_parallel_B = process_anomalies_non_parallel(detect_speed_anomalies, vessel_groups)
+    # Process speed anomalies
+    speed_anomalies_parallel, parallel_B = process_anomalies_parallel(detect_speed_anomalies, vessel_groups)
 
-    # Process all neighbor anomalies
+
     df_pandas = df_pandas.with_columns(pl.col("timestamp").dt.hour().alias("hour"))
     hourly_groups = df_pandas.group_by('hour')
-    neighbor_anomalies_parallel, parallel_C = process_anomalies_parallel(detect_neighboring_anomalies, hourly_groups, n_rows = len(df_pandas))
-    neighbor_anomalies_non_parallel, non_parallel_C = process_anomalies_non_parallel(detect_neighboring_anomalies, hourly_groups)
 
-    # Total times for parallel and non-parallel tasks
-    total_parallel_time = parallel_A + parallel_B + parallel_C
-    total_non_parallel_time = non_parallel_A + non_parallel_B + non_parallel_C
+    # Process neighbor anomalies
+    neighbor_anomalies_parallel, parallel_C = process_anomalies_parallel(detect_neighboring_anomalies, hourly_groups)
 
-    # Compute speedup
-    total_speedup = total_non_parallel_time / total_parallel_time if total_parallel_time > 0 else 0
-
-    # Print anomalies
-    print(f"Location Anomalies count: {len(location_anomalies_parallel):.2f}")
-    print(f"Speed Anomalies count: {len(speed_anomalies_parallel):.2f}")
-    print(f"Neighboring Anomalies count: {len(neighbor_anomalies_parallel):.2f}")
-
-    # Print results
-    print(f"Total Speedup (sequential/parallel): {total_speedup:.2f}")
-    print(f"Total Parallel Time: {total_parallel_time:.2f} seconds")
-    print(f"Total Non-Parallel Time: {total_non_parallel_time:.2f} seconds")
