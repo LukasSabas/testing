@@ -188,7 +188,7 @@ def test_various_configurations(df_pandas):
     return results
 
 # Function to plot results
-def plot_results(results):
+def plot_results(results, output_dir="."):
     df_results = pd.DataFrame(results)
 
     # Execution Time Plot
@@ -202,7 +202,8 @@ def plot_results(results):
     plt.ylabel("Execution Time (s)")
     plt.legend(title="Number of CPUs")
     plt.grid()
-    plt.show()
+    plt.savefig(f"{output_dir}/execution_time_vs_chunk_size.png")  # Save the plot as a PNG file
+    plt.close()  # Close the figure to free up memory
 
     # CPU Usage Plot
     plt.figure(figsize=(10, 6))
@@ -213,7 +214,8 @@ def plot_results(results):
     plt.ylabel("CPU Usage (%)")
     plt.legend()
     plt.grid()
-    plt.show()
+    plt.savefig(f"{output_dir}/cpu_usage_over_time.png")  # Save the plot as a PNG file
+    plt.close()
 
     # Memory Usage Plot
     plt.figure(figsize=(10, 6))
@@ -224,12 +226,12 @@ def plot_results(results):
     plt.ylabel("Memory Usage (%)")
     plt.legend()
     plt.grid()
-    plt.show()
+    plt.savefig(f"{output_dir}/memory_usage_over_time.png")  # Save the plot as a PNG file
+    plt.close()
 
     # Summary
     print("\nPerformance Summary:")
     print(df_results.drop(columns=['cpu_usage_data', 'memory_usage_data']))
-
 
 ##############################################################
 if __name__ == '__main__':
@@ -253,7 +255,7 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect()
+    df = df.collect()#.head(100000)
     print("Data loaded successfully")
     
     # Test different configurations and plot results
