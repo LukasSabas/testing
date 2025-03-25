@@ -1,181 +1,157 @@
 import polars as pl
+import pandas as pd
 from geopy.distance import geodesic
-import numpy as np
 from datetime import datetime
-from concurrent.futures import ProcessPoolExecutor
 import time
-import psutil
+import concurrent.futures
+import os
+import math
+from geopy.distance import geodesic
 import matplotlib.pyplot as plt
-import copy
-from scipy.spatial import KDTree
-from scipy.spatial.distance import cdist
+from collections import defaultdict
 
 # A. Identifying Location Anomalies
 def detect_location_anomalies(data):
     anomalies = []
-    vessel_data = {}
+    vessel_data = {} 
+    DISTANCE_THRESHOLD = 50
+    SPEED_THRESHOLD = 100
 
-    DISTANCE_THRESHOLD = 50  
-    SPEED_THRESHOLD = 100  
+    # Iterate over each row in the input data
+    for row in data.iter_rows(named=True):
+        mmsi, curr_lat, curr_lon, _, timestamp = row["MMSI"], row["Latitude"], row["Longitude"], row["SOG"], row["timestamp"]
 
-    for row in data.to_numpy():
-        mmsi, curr_lat, curr_lon, _, timestamp = row  
-
-        if not (-90 <= curr_lat <= 90) or not (-180 <= curr_lon <= 180):
-            continue
-
+        # If this is the first record for a specific vessel (MMSI), initialize its data
         if mmsi not in vessel_data:
             vessel_data[mmsi] = {"prev_lat": None, "prev_lon": None, "prev_time": None}
-        
+
+        # Retrieve the previous latitude, longitude, and timestamp for the current vessel (if available)
         prev_lat, prev_lon, prev_time = vessel_data[mmsi].values()
 
+        # If there is previous data for this vessel, calculate distance and speed
         if prev_lat is not None and prev_lon is not None:
-            distance = geodesic((prev_lat, prev_lon), (curr_lat, curr_lon)).nm  
-            if isinstance(timestamp, (int, float)) and isinstance(prev_time, (int, float)):
-                time_delta = (timestamp - prev_time) / 3600  # Correct for numerical timestamps
+            distance = geodesic((prev_lat, prev_lon), (curr_lat, curr_lon)).nm 
+            if isinstance(timestamp, datetime) and isinstance(prev_time, datetime):
+                time_delta = (timestamp - prev_time).total_seconds() / 3600
             else:
-                timestamp = datetime.fromtimestamp(timestamp)
-                prev_time = datetime.fromtimestamp(prev_time)
-                time_delta = (timestamp - prev_time).total_seconds() / 3600 
+                time_delta = (float(timestamp) - float(prev_time)) / 3600
 
+            # Only consider comparisons if the time difference is positive
             if time_delta > 0:
-                speed = distance / time_delta  
-
+                speed = distance / time_delta
                 if distance > DISTANCE_THRESHOLD or speed > SPEED_THRESHOLD:
-                    anomalies.append(row)  
-
+                    anomalies.append(row) 
         vessel_data[mmsi] = {"prev_lat": curr_lat, "prev_lon": curr_lon, "prev_time": timestamp}
 
-    return anomalies
+    return anomalies 
 
 # B. Analyzing Speed and Course Consistency
 def detect_speed_anomalies(data, speed_threshold=30):
-    anomalies = []
+    anomalies = [] 
     vessel_data = {}
     
-    for row in data.to_numpy():
-        mmsi, _, _, sog, timestamp = row  
+    # Iterate over each row 
+    for row in data.iter_rows(named=True):
+        mmsi, sog, timestamp = row["MMSI"], row["SOG"], row["timestamp"]
 
         if sog is None:
             continue
         
+        # If this is the first record for a specific vessel (MMSI), initialize its data
         if mmsi not in vessel_data:
             vessel_data[mmsi] = {"prev_sog": None, "prev_time": None}
         
+        # Retrieve the previous SOG and timestamp for the current vessel (if available)
         prev_sog, prev_time = vessel_data[mmsi].values()
         
+        # If there is previous data for this vessel, compare the current and previous records
         if prev_sog is not None:
-            if isinstance(timestamp, (int, float)) and isinstance(prev_time, (int, float)):
-                time_delta = (timestamp - prev_time) / 3600  # Correct for numerical timestamps
+            if isinstance(timestamp, datetime) and isinstance(prev_time, datetime):
+                time_delta = (timestamp - prev_time).total_seconds() / 3600
             else:
-                timestamp = datetime.fromtimestamp(timestamp)
-                prev_time = datetime.fromtimestamp(prev_time)
-                time_delta = (timestamp - prev_time).total_seconds() / 3600  
+                time_delta = (float(timestamp) - float(prev_time)) / 3600
+
+            # Only consider the comparison if the time difference is positive
             if time_delta > 0:
-                speed_change = abs(sog - prev_sog)  
-                if speed_change > speed_threshold:  
+                # Calculate the change in speed
+                speed_change = abs(sog - prev_sog)
+                # If the change in speed exceeds the specified threshold, flag it as an anomaly
+                if speed_change > speed_threshold:
                     anomalies.append(row)
-        
         vessel_data[mmsi] = {"prev_sog": sog, "prev_time": timestamp}
     
     return anomalies
 
 # C. Comparing Neighboring Vessel Data
-# Haversine formula to calculate the distance between two points on the Earth
-def detect_neighboring_anomalies(data, radius_nm=1, time_threshold=1):  
-    anomalies = []  
-    all_points = []  
-    vessel_ids = []  
-    timestamps = []  
-      
-    # Earth's radius in nautical miles  
-    R_nm = 3440.065  
-      
-    # Gather valid points and associated vessel info  
-    for row in data.to_numpy():  
-        mmsi, lat, lon, _, ts, _ = row  
-        if lat is None or lon is None or not (-90 <= lat <= 90) or not (-180 <= lon <= 180):  
-            continue  
-        all_points.append((lat, lon))  
-        vessel_ids.append(mmsi)  
-        timestamps.append(ts)  
-      
-    if not all_points:  
-        return anomalies  
-      
-    # Convert lat/lon from degrees to radians  
-    points_rad = np.radians(np.array(all_points))  
-    lats = points_rad[:, 0]  
-    lons = points_rad[:, 1]  
-      
-    # Convert spherical coordinates to 3D Cartesian coordinates: x, y, z, scaled by Earth's radius in nm.  
-    x = R_nm * np.cos(lats) * np.cos(lons)  
-    y = R_nm * np.cos(lats) * np.sin(lons)  
-    z = R_nm * np.sin(lats)  
-    coords_3d = np.column_stack((x, y, z))  
-      
-    # Determine equivalent chord distance for the given arc distance (radius_nm)  
-    # For small angles, chord_length ~ 2 * R_nm * sin(angle/2) where angle = radius_nm / R_nm  
-    # Simplify using: chord_distance = 2 * R_nm * sin(radius_nm/(2*R_nm))  
-    chord_threshold = 2 * R_nm * np.sin(radius_nm / (2 * R_nm))  
-      
-    # Build the KDTree for fast spatial queries  
-    tree = KDTree(coords_3d)  
-      
-    # Query neighbors within chord_threshold for each point  
-    for idx, (point, vessel_id, ts) in enumerate(zip(coords_3d, vessel_ids, timestamps)):  
-        # Get indices of neighbors (including the point itself)  
-        indices = tree.query_ball_point(point, r=chord_threshold)  
-        for j in indices:  
-            # Avoid self-comparison and intra-vessel comparisons  
-            if j <= idx or vessel_ids[j] == vessel_id:  
-                continue  
-            # Check time difference. Allow both numeric timestamp or datetime conversion.  
-            ts2 = timestamps[j]  
-            try:  
-                if isinstance(ts, (int, float)) and isinstance(ts2, (int, float)):  
-                    time_diff = abs(ts - ts2) / 3600  # seconds to hours  
-                else:  
-                    time_diff = abs((datetime.fromtimestamp(ts) - datetime.fromtimestamp(ts2)).total_seconds()) / 3600  
-            except Exception:  
-                continue  
-              
-            if time_diff < time_threshold:  
-                anomaly = {"MMSI_1": vessel_id, "MMSI_2": vessel_ids[j], "Issue": "Unusual proximity detected"}  
-                anomalies.append(anomaly)  
-    return anomalies  
-
-# Runs anomaly detection in parallel
-def process_anomalies_parallel(detect_func, vessel_groups, n_rows):
+# Function to detect neighboring anomalies (vessels too close at the same timestamp)
+def detect_neighboring_anomalies(df, decimals=3, time_window='1m', min_vessels=2):
     anomalies = []
+    
+    df = df.with_columns(
+        pl.col('timestamp').cast(pl.Datetime)
+    )
+    
+    # Round timestamp to the nearest minute
+    df = df.with_columns(
+        pl.col('timestamp').dt.truncate(time_window).alias('timestamp_rounded')
+    )
+    
+    # Round lat/lon and group by timestamp_rounded + rounded location
+    df = df.with_columns(
+        pl.col('Latitude').round(decimals).alias('lat_rounded'),
+        pl.col('Longitude').round(decimals).alias('lon_rounded')
+    )
+    
+    # Group by timestamp_rounded, lat_rounded, and lon_rounded
+    grouped = df.group_by(['timestamp_rounded', 'lat_rounded', 'lon_rounded']).agg(
+        pl.col('MMSI').count().alias('vessel_count')
+    )
+    
+    # Filter anomalies where the vessel count in the group is greater than or equal to min_vessels
+    anomalies_df = grouped.filter(pl.col('vessel_count') >= min_vessels)
+    
+    anomalies = [
+        (row['timestamp_rounded'], row['lat_rounded'], row['lon_rounded'], row['vessel_count'])
+        for row in anomalies_df.to_dicts()
+    ]
+    return anomalies
 
-    total_rows = n_rows
-    cpu_count = psutil.cpu_count(logical=False)
-    chunksize = max(1, total_rows // cpu_count)
+# Running code in parallel (or not)
+def run_parallel(df_pandas, num_cpus=None):
+    max_cpus = os.cpu_count()
+    num_cpus = num_cpus if num_cpus is not None else max_cpus
+    num_cpus = min(num_cpus, max_cpus)
+
+    # Calculate the chunk size: divide the dataframe into chunks based on available CPUs
+    chunk_size = math.ceil(len(df_pandas) / (2 * num_cpus))
+    
+    # Create a list of chunks of the dataframe
+    chunks = [df_pandas[i:i + chunk_size] for i in range(0, len(df_pandas), chunk_size)]
 
     start_time = time.time()
-    # Run the anomaly detection in parallel
-    with ProcessPoolExecutor(max_workers=cpu_count) as executor:
-        results = executor.map(detect_func, (group[1] for group in vessel_groups), chunksize=chunksize)
-
-    # Collect the results from all workers
-    for result in results:
-        anomalies.extend(result)
-
-    return anomalies, time.time() - start_time
-
-# Runs anomaly detection sequentially
-def process_anomalies_non_parallel(detect_func, vessel_groups):
-    start_time = time.time()
-    anomalies = [result for _, group in vessel_groups for result in detect_func(group)]
-    return anomalies, time.time() - start_time
-
-# Performance analysis
-def measure_performance(parallel_time, non_parallel_time):
-    speedup = non_parallel_time / parallel_time if parallel_time > 0 else 0
-    cpu_usage = psutil.cpu_percent(interval=1)
-    mem_usage = psutil.virtual_memory().percent
-    return speedup, cpu_usage, mem_usage
+    
+    # Using ProcessPoolExecutor for better parallelism in CPU-bound tasks
+    with concurrent.futures.ProcessPoolExecutor(max_workers=num_cpus) as executor:
+        # Submit tasks for each chunk
+        future1 = executor.submit(detect_location_anomalies, chunks[0])
+        future2 = executor.submit(detect_speed_anomalies, chunks[1] if len(chunks) > 1 else chunks[0])
+        future3 = executor.submit(detect_neighboring_anomalies, chunks[2] if len(chunks) > 2 else chunks[0])
+        
+        # Get the results
+        loc_anomalies = future1.result()
+        speed_anomalies = future2.result()
+        neighbor_anomalies = future3.result()
+    
+    end_time = time.time()
+    
+    print("\nParallel Execution:")
+    print(f"Using {num_cpus} CPU(s)")
+    print(f"Location Anomalies: {len(loc_anomalies)}")
+    print(f"Speed Anomalies: {len(speed_anomalies)}")
+    print(f"Neighboring Anomalies: {len(neighbor_anomalies)}")
+    print(f"Total Time: {end_time - start_time:.4f} seconds")
+    
+    return end_time - start_time
 
 if __name__ == '__main__':
     df_lazy = pl.scan_csv(
@@ -189,36 +165,17 @@ if __name__ == '__main__':
         .select(["MMSI", "Latitude", "Longitude", "SOG", "timestamp"])
     )
 
-    df_pandas = df.collect().head(500000)
-    vessel_groups = df_pandas.group_by('MMSI')
+    # Filter out invalid rows based on latitude and longitude before running the parallel functions
+    df = df.filter(
+        (pl.col('Latitude').is_not_null()) & 
+        (pl.col('Longitude').is_not_null()) &
+        (pl.col('Latitude').is_between(-90, 90)) & 
+        (pl.col('Longitude').is_between(-180, 180))
+    )
 
-    # Process all location anomalies
-    location_anomalies_parallel, parallel_A = process_anomalies_parallel(detect_location_anomalies, vessel_groups, n_rows = len(df_pandas))
-    location_anomalies_non_parallel, non_parallel_A = process_anomalies_non_parallel(detect_location_anomalies, vessel_groups)
-
-    # Process all speed anomalies
-    speed_anomalies_parallel, parallel_B = process_anomalies_parallel(detect_speed_anomalies, vessel_groups, n_rows = len(df_pandas))
-    speed_anomalies_non_parallel, non_parallel_B = process_anomalies_non_parallel(detect_speed_anomalies, vessel_groups)
-
-    # Process all neighbor anomalies
-    df_pandas = df_pandas.with_columns(pl.col("timestamp").dt.hour().alias("hour"))
-    hourly_groups = df_pandas.group_by('hour')
-    neighbor_anomalies_parallel, parallel_C = process_anomalies_parallel(detect_neighboring_anomalies, hourly_groups, n_rows = len(df_pandas))
-    neighbor_anomalies_non_parallel, non_parallel_C = process_anomalies_non_parallel(detect_neighboring_anomalies, hourly_groups)
-
-    # Total times for parallel and non-parallel tasks
-    total_parallel_time = parallel_A + parallel_B + parallel_C
-    total_non_parallel_time = non_parallel_A + non_parallel_B + non_parallel_C
-
-    # Compute speedup
-    total_speedup = total_non_parallel_time / total_parallel_time if total_parallel_time > 0 else 0
-
-    # Print anomalies
-    print(f"Location Anomalies count: {len(location_anomalies_parallel):.2f}")
-    print(f"Speed Anomalies count: {len(speed_anomalies_parallel):.2f}")
-    print(f"Neighboring Anomalies count: {len(neighbor_anomalies_parallel):.2f}")
-
-    # Print results
-    print(f"Total Speedup (sequential/parallel): {total_speedup:.2f}")
-    print(f"Total Parallel Time: {total_parallel_time:.2f} seconds")
-    print(f"Total Non-Parallel Time: {total_non_parallel_time:.2f} seconds")
+    df = df.collect().head(100000)
+    parallel_time = run_parallel(df, 8)
+    sequential_time = run_parallel(df, 1)
+    
+    speedup = sequential_time / parallel_time
+    print(f"\nSpeedup (Sequential Time / Parallel Time): {speedup:.2f}x")
