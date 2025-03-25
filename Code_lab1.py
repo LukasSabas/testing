@@ -177,5 +177,5 @@ if __name__ == '__main__':
     parallel_time = run_parallel(df, 8)
     sequential_time = run_parallel(df, 1)
     
-    speedup = sequential_time / parallel_time
+    speedup = sequential_time
     print(f"\nSpeedup (Sequential Time / Parallel Time): {speedup:.2f}x")
