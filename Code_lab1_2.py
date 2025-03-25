@@ -11,6 +11,9 @@ import psutil
 import matplotlib.pyplot as plt
 import threading 
 from collections import defaultdict
+import requests
+import zipfile
+import io
 
 # A. Identifying Location Anomalies
 def detect_location_anomalies(data):
@@ -169,8 +172,8 @@ def run_task(chunk):
 
 # Function to test configurations
 def test_various_configurations(df_pandas):
-    cpu_configs = [8, 32]
-    chunk_configs = [100000, 250000, 500000]
+    cpu_configs = [16, 24, 48]
+    chunk_configs = [10000, 100000]
     results = []
 
     for num_cpus in cpu_configs:
@@ -240,6 +243,7 @@ if __name__ == '__main__':
         "C:/Users/37068/Desktop/UNIVERSITETAS/Magistras/2 kursas/Didžiųjų duomenų analizė/Lab1/aisdk-2025-01-22.csv",
         schema_overrides={"# Timestamp": pl.Utf8, "MMSI": pl.Int64, "Latitude": pl.Float64, "Longitude": pl.Float64, "SOG": pl.Float64}
     ) 
+
     df = (
         df_lazy.with_columns(
             pl.col("# Timestamp").str.strptime(pl.Datetime, "%d/%m/%Y %H:%M:%S").alias("timestamp")
@@ -255,7 +259,7 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect()#.head(100000)
+    df = df.collect()#.head(5000000)
     print("Data loaded successfully")
     
     # Test different configurations and plot results

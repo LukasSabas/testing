@@ -158,6 +158,7 @@ if __name__ == '__main__':
         "C:/Users/37068/Desktop/UNIVERSITETAS/Magistras/2 kursas/Didžiųjų duomenų analizė/Lab1/aisdk-2025-01-22.csv",
         schema_overrides={"# Timestamp": pl.Utf8, "MMSI": pl.Int64, "Latitude": pl.Float64, "Longitude": pl.Float64, "SOG": pl.Float64}
     )
+
     df = (
         df_lazy.with_columns(
             pl.col("# Timestamp").str.strptime(pl.Datetime, "%d/%m/%Y %H:%M:%S").alias("timestamp")
@@ -173,8 +174,8 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect() #.head(100000)
-    parallel_time = run_parallel(df, 32)
+    df = df.collect()#.head(10000)
+    parallel_time = run_parallel(df, 48)
     sequential_time = run_parallel(df, 1)
     
     speedup = sequential_time
