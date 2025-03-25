@@ -169,7 +169,7 @@ def run_task(chunk):
 
 # Function to test configurations
 def test_various_configurations(df_pandas):
-    cpu_configs = [4, 8]
+    cpu_configs = [8, 32]
     chunk_configs = [100000, 250000, 500000]
     results = []
 
