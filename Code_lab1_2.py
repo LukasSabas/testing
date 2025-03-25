@@ -253,7 +253,7 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect().head(200000)
+    df = df.collect()
     print("Data loaded successfully")
     
     # Test different configurations and plot results

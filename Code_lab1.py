@@ -173,7 +173,7 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect().head(100000)
+    df = df.collect()
     parallel_time = run_parallel(df, 8)
     sequential_time = run_parallel(df, 1)
     
