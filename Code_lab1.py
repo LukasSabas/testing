@@ -20,7 +20,7 @@ def detect_location_anomalies(data):
     # Iterate over each row in the input data
     for row in data.iter_rows(named=True):
         mmsi, curr_lat, curr_lon, _, timestamp = row["MMSI"], row["Latitude"], row["Longitude"], row["SOG"], row["timestamp"]
-
+    
         # If this is the first record for a specific vessel (MMSI), initialize its data
         if mmsi not in vessel_data:
             vessel_data[mmsi] = {"prev_lat": None, "prev_lon": None, "prev_time": None}
@@ -53,7 +53,7 @@ def detect_speed_anomalies(data, speed_threshold=30):
     # Iterate over each row 
     for row in data.iter_rows(named=True):
         mmsi, sog, timestamp = row["MMSI"], row["SOG"], row["timestamp"]
-
+        
         if sog is None:
             continue
         
@@ -84,36 +84,29 @@ def detect_speed_anomalies(data, speed_threshold=30):
 
 # C. Comparing Neighboring Vessel Data
 # Function to detect neighboring anomalies (vessels too close at the same timestamp)
-def detect_neighboring_anomalies(df, decimals=3, time_window='1m', min_vessels=2):
-    anomalies = []
-    
-    df = df.with_columns(
-        pl.col('timestamp').cast(pl.Datetime)
-    )
-    
+def detect_neighboring_anomalies(df, decimals=3, time_window='min', min_vessels=2):
+    # Convert to pandas
+    df = df.to_pandas()
+
+    # Ensure timestamp is in datetime format
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    print("1")
     # Round timestamp to the nearest minute
-    df = df.with_columns(
-        pl.col('timestamp').dt.truncate(time_window).alias('timestamp_rounded')
-    )
-    
-    # Round lat/lon and group by timestamp_rounded + rounded location
-    df = df.with_columns(
-        pl.col('Latitude').round(decimals).alias('lat_rounded'),
-        pl.col('Longitude').round(decimals).alias('lon_rounded')
-    )
-    
+    df["timestamp_rounded"] = df["timestamp"].dt.floor(time_window)
+    print("2")
+    # Round latitude and longitude
+    df["lat_rounded"] = df["Latitude"].round(decimals)
+    df["lon_rounded"] = df["Longitude"].round(decimals)
+
     # Group by timestamp_rounded, lat_rounded, and lon_rounded
-    grouped = df.group_by(['timestamp_rounded', 'lat_rounded', 'lon_rounded']).agg(
-        pl.col('MMSI').count().alias('vessel_count')
-    )
-    
-    # Filter anomalies where the vessel count in the group is greater than or equal to min_vessels
-    anomalies_df = grouped.filter(pl.col('vessel_count') >= min_vessels)
-    
-    anomalies = [
-        (row['timestamp_rounded'], row['lat_rounded'], row['lon_rounded'], row['vessel_count'])
-        for row in anomalies_df.to_dicts()
-    ]
+    grouped = df.groupby(["timestamp_rounded", "lat_rounded", "lon_rounded"]) \
+                .agg(vessel_count=("MMSI", "count")) \
+                .reset_index()
+    print("3")
+    # Filter anomalies where vessel count is >= min_vessels
+    anomalies_df = grouped[grouped["vessel_count"] >= min_vessels]
+    anomalies = list(anomalies_df.itertuples(index=False, name=None))
+
     return anomalies
 
 # Running code in parallel (or not)
@@ -136,7 +129,6 @@ def run_parallel(df_pandas, num_cpus=None):
         future1 = executor.submit(detect_location_anomalies, chunks[0])
         future2 = executor.submit(detect_speed_anomalies, chunks[1] if len(chunks) > 1 else chunks[0])
         future3 = executor.submit(detect_neighboring_anomalies, chunks[2] if len(chunks) > 2 else chunks[0])
-        
         # Get the results
         loc_anomalies = future1.result()
         speed_anomalies = future2.result()
@@ -155,7 +147,7 @@ def run_parallel(df_pandas, num_cpus=None):
 
 if __name__ == '__main__':
     df_lazy = pl.scan_csv(
-        "C:/Users/37068/Desktop/UNIVERSITETAS/Magistras/2 kursas/Didžiųjų duomenų analizė/Lab1/aisdk-2025-01-22.csv",
+        "/scratch/lustre/home/lusa7563/big_data/Results/BD_1/aisdk-2025-01-22.csv",
         schema_overrides={"# Timestamp": pl.Utf8, "MMSI": pl.Int64, "Latitude": pl.Float64, "Longitude": pl.Float64, "SOG": pl.Float64}
     )
 
@@ -174,8 +166,10 @@ if __name__ == '__main__':
         (pl.col('Longitude').is_between(-180, 180))
     )
 
-    df = df.collect()#.head(10000)
-    parallel_time = run_parallel(df, 48)
+    df = df.collect().head(3000000)
+    print("Data is loaded")
+    parallel_time = run_parallel(df,48)
+    print("Parallel done")
     sequential_time = run_parallel(df, 1)
     
     speedup = sequential_time
